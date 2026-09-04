@@ -413,7 +413,7 @@ export default function SwarmWarRoom({ mode = 'user' }) {
 
             <button
               onClick={handleExecute}
-              disabled={!payload.risk.isApproved || execState === 'approving' || execState === 'executing' || isTxWaiting || hasInsufficientBalance || isNotExecutable}
+              disabled={!payload.risk.isApproved || payload.risk.isPending || execState === 'approving' || execState === 'executing' || isTxWaiting || hasInsufficientBalance || isNotExecutable}
               className={styles.executeBtn}
             >
               {(execState === 'approving' || execState === 'executing' || isTxWaiting) && (

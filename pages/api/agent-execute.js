@@ -54,6 +54,33 @@ function computeTradeHash(user, tokenIn, tokenOut, amountIn, minAmountOut, slipp
   );
 }
 
+/**
+ * Retry a write that the RPC node throttled.
+ *
+ * Bradbury replies `-32005 transaction gas rate limit exceeded: node is at
+ * capacity, retry in ~Nms`. Settlement cannot rotate senders the way validation
+ * can — AgentExecutor's onlyAgent modifier means these calls must come from the
+ * authorised agent — so waiting the hinted interval is the correct remedy here.
+ * Without this the throttle surfaced mid-flow as a bare
+ * "Request exceeds defined limit", which reads like a failed trade when in fact
+ * nothing was submitted.
+ */
+async function sendWithRetry(fn, label) {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await fn();
+    } catch (err) {
+      const text = `${err?.shortMessage || ''} ${err?.message || ''} ${err?.details || ''}`;
+      const throttled = /-32005|gas rate limit|at capacity|exceeds defined limit/i.test(text);
+      if (!throttled || attempt >= 4) throw err;
+      const hint = text.match(/retryAfterMs"?\s*:\s*(\d+)/) || text.match(/retry in ~?(\d+)\s*ms/i);
+      const wait = Math.min(8000, (hint ? parseInt(hint[1], 10) : 1500) + attempt * 500);
+      console.warn(`[settlement] ${label} throttled by node, retrying in ${wait}ms (attempt ${attempt + 1}/5)`);
+      await new Promise((r) => setTimeout(r, wait));
+    }
+  }
+}
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
@@ -351,12 +378,12 @@ export default async function handler(req, res) {
     // ── STEP 1: approveTradeWithParams (onlyAgent — server-side only) ─────────
     // Writes keccak256(abi.encode(user, tokenIn, tokenOut, amountIn, minOut, slippage, deadline))
     // to approvedTrades[tradeHash] = true in AgentExecutor storage.
-    const approveTxHash = await walletClient.writeContract({
+    const approveTxHash = await sendWithRetry(() => walletClient.writeContract({
       address: agentExecutorAddress,
       abi: AGENT_EXECUTOR_ABI,
       functionName: 'approveTradeWithParams',
       args: [user, tokenInAddr, tokenOutAddr, amountInBig, minAmountOutBig, slippageBpsBig, deadlineBig],
-    });
+    }), 'approveTradeWithParams');
 
     console.log(`[agent-execute] approveTradeWithParams submitted: ${approveTxHash}`);
 
@@ -382,7 +409,7 @@ export default async function handler(req, res) {
     //   3. Pulls tokenIn from user → approves entrypoint → calls AGGFlowEntrypoint.executeSwapWithReceiver
     //   4. Output tokens go directly to user
     const isNative = tokenInAddr === zeroAddress;
-    const execTxHash = await walletClient.writeContract({
+    const execTxHash = await sendWithRetry(() => walletClient.writeContract({
       address: agentExecutorAddress,
       abi: AGENT_EXECUTOR_ABI,
       functionName: 'executeSwap',
@@ -399,7 +426,7 @@ export default async function handler(req, res) {
         feeCollector,
       ],
       value: isNative ? amountInBig : 0n,
-    });
+    }), 'executeSwap');
 
     console.log(`[agent-execute] executeSwap submitted: ${execTxHash}`);
 

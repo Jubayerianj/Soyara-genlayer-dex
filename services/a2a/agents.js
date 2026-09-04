@@ -116,15 +116,33 @@ export class IntentAgent {
     let mode = 'standard';
 
     // 1. Action detection
+    //
+    // "add liquidity" was matched as one contiguous phrase, so
+    // "add 20 usdc and usdt liquidity on v3" fell through to SWAP and the swarm
+    // tried to trade the user's deposit. Match the verb and the noun
+    // independently instead, and check REMOVE before ADD so "remove liquidity"
+    // is not swallowed by the add branch.
+    const mentionsLiquidity = /\bliquidity\b|\blp\b|\bpool\b/.test(text);
+    const addsVerb = /\badd\b|\bprovide\b|\bdeposit\b|\bsupply\b|\bseed\b/.test(text);
+    const removesVerb = /\bremove\b|\bwithdraw\b|\bexit\b|\bpull\b|\bunstake\b/.test(text);
+
     if (text.includes('arbitrage') || text.includes('arb') || text.includes('divergence')) {
       action = 'ARBITRAGE_SCAN';
       mode = 'quant';
-    } else if (text.includes('add liquidity') || text.includes('pool') || text.includes('lp') || text.includes('deposit')) {
+    } else if (mentionsLiquidity && removesVerb) {
+      action = 'REMOVE_LIQUIDITY';
+    } else if (mentionsLiquidity && addsVerb) {
       action = 'ADD_LIQUIDITY';
       tokenIn = 'WGEN';
       tokenOut = 'USDC';
       amountIn = '10';
-    } else if (text.includes('remove') || text.includes('withdraw')) {
+    } else if (mentionsLiquidity) {
+      // "liquidity"/"pool" with no verb still means a deposit, not a swap.
+      action = 'ADD_LIQUIDITY';
+      tokenIn = 'WGEN';
+      tokenOut = 'USDC';
+      amountIn = '10';
+    } else if (removesVerb) {
       action = 'REMOVE_LIQUIDITY';
     } else if (text.includes('tamper') || text.includes('attack') || text.includes('stress') || text.includes('security')) {
       action = 'SECURITY_TEST';
@@ -134,11 +152,17 @@ export class IntentAgent {
     // 2. Amount extraction
     // Strip the slippage percentage before reading the trade size, otherwise
     // "swap 5 USDC with 0.3% slippage" can pick up 0.3 as the amount.
-    const amountText = text.replace(/\d+(\.\d+)?\s*%/g, ' ');
-    const amountMatch = amountText.match(/(\d+(\.\d+)?)\s*(usdc|usdt|wgen|gen|wbtc|eth|fswp)?/i);
-    if (amountMatch && amountMatch[1]) {
-      amountIn = amountMatch[1];
-    }
+    // Strip the slippage percentage AND the venue markers before reading sizes.
+    // "compare v2 vs v3 route for 500 USDT to GEN" previously read the "2" out
+    // of "v2" as the trade size and proposed a 2 USDT swap.
+    const amountText = text
+      .replace(/\d+(\.\d+)?\s*%/g, ' ')
+      .replace(/\bv[23]\b/g, ' ');
+    const numbers = (amountText.match(/\d+(?:\.\d+)?/g) || []);
+    if (numbers.length > 0) amountIn = numbers[0];
+    // A deposit names both sides ("Add liquidity 10 WGEN and 200 USDC"), so keep
+    // the second figure rather than silently deriving it.
+    const amountInB = numbers.length > 1 ? numbers[1] : null;
 
     // 3. Token extraction
     // Two things matter here, and both were wrong before:
@@ -211,6 +235,7 @@ export class IntentAgent {
       tokenInSymbol: tokenIn,
       tokenOutSymbol: tokenOut,
       amountIn,
+      amountInB,
       slippageBps,
       mode,
       venuePreference,
@@ -636,6 +661,24 @@ export async function* orchestrateSwarm(userPrompt, userAddress, config = {}) {
     status: risk.isApproved ? 'complete' : risk.isPending ? 'working' : 'error'
   };
 
+  // A refused proposal ends the swarm here.
+  //
+  // The flow used to continue into calldata inspection and then announce
+  // "Swarm agreement ready — execute this trade", directly under a red
+  // rejection. Nothing is executable at that point, and offering an Execute
+  // button for a proposal consensus refused is the most dangerous thing this
+  // page could do.
+  if (!risk.isApproved && !risk.isPending) {
+    yield {
+      agent: AGENT_REGISTRY.intent,
+      type: 'SWARM_HALTED',
+      payload: { intent, route, risk },
+      text: `⛔ **Swarm halted — nothing will be executed.** GenLayer consensus did not approve this proposal, so no settlement is possible and no funds have moved. ${risk.reason || ''}`,
+      status: 'error',
+    };
+    return;
+  }
+
   // Step 4: Dev Inspector Agent Dissects Calldata & Security
   yield {
     agent: AGENT_REGISTRY.dev,
@@ -664,9 +707,13 @@ export async function* orchestrateSwarm(userPrompt, userAddress, config = {}) {
       risk,
       devInspection
     },
-    text: intent.action === 'ADD_LIQUIDITY'
-      ? `🎉 **Swarm agreement ready.** Execute to deposit into the **${route.tokenIn.symbol}/${route.tokenOut.symbol}** pool through the GenLayer-gated one-time approval.`
-      : `🎉 **Multi-Agent Swarm Consensual Agreement Ready!** You can now execute this trade with one-click non-custodial settlement.`,
+    text: risk.isPending
+      // Still undecided: the swarm has done its part, but there is no verdict to
+      // execute against yet. Saying "ready" here would be untrue.
+      ? `⏳ **Swarm finished, consensus still pending.** The validator round has not returned a verdict, so Execute stays disabled until it does. Your trade was not rejected.`
+      : intent.action === 'ADD_LIQUIDITY'
+        ? `🎉 **Swarm agreement ready.** Execute to deposit into the **${route.tokenIn.symbol}/${route.tokenOut.symbol}** pool through the GenLayer-gated one-time approval.`
+        : `🎉 **Multi-Agent Swarm Consensual Agreement Ready!** You can now execute this trade with one-click non-custodial settlement.`,
     status: 'ready'
   };
 }
