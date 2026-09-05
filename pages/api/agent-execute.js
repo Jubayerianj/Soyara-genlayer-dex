@@ -27,7 +27,7 @@ import { createPublicClient, createWalletClient, http, parseUnits, zeroAddress, 
 import { privateKeyToAccount } from 'viem/accounts';
 import AGENT_EXECUTOR_ABI from '../../abi/AgentExecutor.json';
 import { CONTRACT_ADDRESSES } from '../../constants/addresses.js';
-import { quoteBestRoute } from '../../lib/dexQuote.js';
+import { quoteBestRouteMultiHop } from '../../lib/dexQuote.js';
 import { computeProposalId, readValidationVerdict, checkTradeAgainstMandate } from '../../lib/genlayer.js';
 
 // GenLayer Bradbury Testnet chain config (chain ID 4221)
@@ -315,7 +315,7 @@ export default async function handler(req, res) {
     let requoteInfo = null;
     try {
       const wgenAddr = CONTRACT_ADDRESSES[4221]?.wgen || '0x315374AA9b5536037Cc1Efeea2439CCC0913A77e';
-      const fresh = await quoteBestRoute(
+      const fresh = await quoteBestRouteMultiHop(
         tokenInAddr === zeroAddress ? wgenAddr : tokenInAddr,
         tokenOutAddr === zeroAddress ? wgenAddr : tokenOutAddr,
         amountInBig,
