@@ -573,7 +573,7 @@ export async function* orchestrateSwarm(userPrompt, userAddress, config = {}) {
   yield {
     agent: AGENT_REGISTRY.risk,
     type: 'MESSAGE',
-    text: `Broadcasting execution proposal to GenLayer Intelligent Contract (\`${INTELLIGENT_CONTRACTS.agentValidator.slice(0, 8)}...\`) for GenVM Optimistic Democracy consensus...`,
+text: `Broadcasting to the AgentValidator Intelligent Contract (\`${INTELLIGENT_CONTRACTS.agentValidator.slice(0, 8)}...\`) for GenVM consensus. Every ${intent.action === 'SWAP' ? 'trade' : 'deposit'} is validated by a real consensus round before anything settles — that round is the wait, and it is the network, not the app. Repeating the same request inside 10 minutes reuses the recorded verdict and is near-instant.`,
     status: 'working'
   };
 
